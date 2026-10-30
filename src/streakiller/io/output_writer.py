@@ -15,7 +15,6 @@ from typing import Protocol, runtime_checkable
 
 from PIL import Image as PILImage
 import cv2
-#from matplotlib import lines
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -168,26 +167,6 @@ class LocalOutputWriter:
                 ANNOTATION_THICKNESS,
                 cv2.LINE_AA,
             )
-            #xmin, xmax = min(x1, x2), max(x1, x2)
-            #ymin, ymax = min(y1, y2), max(y1, y2)
-            # green bounding box
-            #cv2.rectangle(
-            #    display,
-            #    (xmin, ymin),
-            #    (xmax, ymax),
-            #    (0, 255, 0),
-            #    ANNOTATION_THICKNESS,
-            #)
-
-            # yellow number
-            #cv2.putText(
-            #    display, str(i + 1), (xmin, ymin - 10),
-            #    cv2.FONT_HERSHEY_SIMPLEX,
-            #    0.45,
-            #    (0, 255, 255),
-            #    ANNOTATION_THICKNESS,
-            #    cv2.LINE_AA,
-            #)
 
         path = run_dir / "detected_streaks.png"
         cv2.imwrite(str(path), display)
