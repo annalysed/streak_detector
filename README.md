@@ -27,10 +27,16 @@ pip install -e ".[dev]"
 # Validate config before processing
 python -m streakiller validate-config --config config.json
 
-# Preview which files would be processed
-python -m streakiller process --images-dir images/ --dry-run
+# Process images using hough method
+python -m streakiller process
 
-# Process all FITS files in a directory
+# Process images using pca_fft method
+python -m streakiller process --method pca_fft
+
+# Preview which files would be processed
+python -m streakiller process --dry-run
+
+# Process all FITS files in directory different than specified in config file
 python -m streakiller process --images-dir images/
 
 # Process specific files
@@ -55,7 +61,7 @@ Processes one or more FITS files and writes results to the output directory.
 | `--images-dir PATH` | — | Directory of FITS files (mutually exclusive with `FILES`) |
 | `--glob TEXT` | `*.fit*` | Glob pattern when using `--images-dir` |
 | `--output-dir PATH` | *(from config)* | Override the output directory |
-| `--workers INTEGER` | `1` | Number of parallel worker processes |
+| `--workers INTEGER` | `1` | Number of parallel worker processes BROKEN AS OF 10-29-26 |
 | `--log-format [text\|json]` | `text` | Human-readable or structured JSON logs |
 | `--dry-run` | — | Print matched files and exit without processing |
 | `--fail-fast` | — | Stop immediately on the first error |
@@ -71,6 +77,7 @@ python -m streakiller process --images-dir images/ --output-dir /tmp/results
 
 # Run four parallel workers for a large batch of images
 python -m streakiller process --images-dir images/ --workers 4
+#BROKEN AS OF 10-29-26
 
 # Structured JSON logs (useful for log aggregators / CI)
 python -m streakiller process --images-dir images/ --log-format json
@@ -84,6 +91,8 @@ python -m streakiller process --images-dir images/ --log-format json
 | `1` | One or more files failed (details on stderr) |
 | `2` | Config validation error — nothing was processed |
 | `3` | No FITS files matched |
+
+**DOCUMENTATION BELOW IS ONLY APPLICABLE TO HOUGH METHOD**
 
 **Output layout** (one subdirectory per image):
 

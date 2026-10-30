@@ -10,7 +10,6 @@ build/
 testing_shit/
 *.bsp
 calibration_frames/**
-images/**
 dev_tools/
 config.json
 *.fit
