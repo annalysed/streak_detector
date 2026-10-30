@@ -63,6 +63,9 @@ def cli() -> None:
 @click.option("--timing-log", "timing_log_path", default=None,
               type=click.Path(dir_okay=False, writable=True),
               help="Write per-file timing data to this CSV file")
+#detection method choice
+@click.option("--method", type=click.Choice(["hough","pca_fft"]), default="hough")
+
 def process(
     files: tuple,
     config_path: str,
@@ -74,6 +77,7 @@ def process(
     dry_run: bool,
     fail_fast: bool,
     timing_log_path: Optional[str],
+    method: str,
 ) -> None:
     """Process one or more FITS files for satellite streaks."""
     _setup_logging(log_format)
@@ -124,8 +128,10 @@ def process(
 
     # Process ----------------------------------------------------------- #
     click.echo(f"Processing {len(paths)} file(s) with {workers} worker(s)...")
+    
+    # This is the part that calls _run_pipeline and prints to the terminal. If this is deleted, nothing runs
     errors = _run_pipeline(
-        paths, cfg, workers, fail_fast,
+        paths, cfg, workers, fail_fast, method, output_dir,
         timing_log_path=Path(timing_log_path) if timing_log_path else None,
     )
 
@@ -201,6 +207,8 @@ def _run_pipeline(
     cfg: PipelineConfig,
     workers: int,
     fail_fast: bool,
+    method: str,
+    output_dir: str,
     timing_log_path: Optional[Path] = None,
 ) -> list[tuple[Path, str]]:
     from streakiller.io.fits_loader import FitsLoader
@@ -213,7 +221,7 @@ def _run_pipeline(
         loader = FitsLoader()
         pipeline = StreakPipeline.from_config(cfg)
         for path in paths:
-            wr = _process_one_path(loader, pipeline, path)
+            wr = _process_one_path(loader, pipeline, path, method, output_dir)
             timings.append((path, wr))
             _log_file_timing(path, wr)
             if wr.error:
@@ -296,12 +304,12 @@ def _write_timing_log(
     logger.info("Timing log written to %s", timing_log_path)
 
 
-def _process_one_path(loader, pipeline, path: Path) -> _WorkerResult:
+def _process_one_path(loader, pipeline, path: Path, method, output_dir) -> _WorkerResult:
     pid = os.getpid()
     t0 = time.perf_counter()
     try:
         image = loader.load(path)
-        result = pipeline.process(image)
+        result = pipeline.process(image, method, output_dir)
         elapsed = time.perf_counter() - t0
         return _WorkerResult(error=result.error or None, elapsed_s=elapsed, pid=pid)
     except Exception as exc:
@@ -312,6 +320,8 @@ def _process_one_path(loader, pipeline, path: Path) -> _WorkerResult:
 # Module-level state populated once per worker process by _init_worker.
 _worker_loader = None
 _worker_pipeline = None
+method = None
+output_dir = None
 
 
 def _init_worker(cfg: PipelineConfig) -> None:
@@ -322,11 +332,13 @@ def _init_worker(cfg: PipelineConfig) -> None:
 
     _worker_loader = FitsLoader()
     _worker_pipeline = StreakPipeline.from_config(cfg)
+    #method = ''
+    #output_dir =  ''
 
 
-def _process_path_worker(path_str: str) -> _WorkerResult:
+def _process_path_worker(path_str: str, method, output_dir) -> _WorkerResult:
     """Top-level function suitable for ProcessPoolExecutor (must be picklable)."""
-    return _process_one_path(_worker_loader, _worker_pipeline, Path(path_str))
+    return _process_one_path(_worker_loader, _worker_pipeline, Path(path_str), method='', output_dir='')
 
 
 class _JsonFormatter(logging.Formatter):

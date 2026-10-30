@@ -10,14 +10,18 @@ from __future__ import annotations
 import csv
 import json
 import logging
-from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from PIL import Image as PILImage
 import cv2
+#from matplotlib import lines
 import numpy as np
-from PIL import Image, PngImagePlugin
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from scipy.ndimage import map_coordinates
 
+from streakiller.config.schema import FftDetectorParams as cfg
 from streakiller.config.schema import OutputOptions
 from streakiller.models.result import PipelineResult
 
@@ -35,7 +39,7 @@ STAGE_OVERLAY_COLORS: list[tuple[int, int, int]] = [
     (167, 121, 204),  # reddish purple
 ]
 
-ANNOTATION_THICKNESS = 1
+ANNOTATION_THICKNESS = 3
 LEGEND_FONT_SCALE = 0.6
 LEGEND_TEXT_THICKNESS = 1
 
@@ -67,6 +71,9 @@ class LocalOutputWriter:
         self._dir = Path(output_dir)
         self._options = options or OutputOptions()
         self._dir.mkdir(parents=True, exist_ok=True)
+        self.fft_image_log = None
+        self.fft_template_log = None
+        self.fft_product_log = None
 
     def write(self, result: PipelineResult) -> None:
         stem = result.source_path.stem if result.source_path else "unknown"
@@ -84,8 +91,39 @@ class LocalOutputWriter:
         if self._options.save_text_summary:
             self._write_text_summary(result, run_dir)
 
+        # Mirror the final image over the vertical to match the orientation of the original FITS image, which is flipped by the Hough transform
+        original_plot = PILImage.open(run_dir / "detected_streaks.png")
+        mirrored_plot = original_plot.transpose(PILImage.FLIP_TOP_BOTTOM)
+        mirrored_plot.save(run_dir / "final_results_hough.png")
+
         logger.info("Results written to %s", run_dir)
 
+    # pca_fft_write() was intended to be an equivalent to write() for the pca_fft method, but is unused due to object attribute (self) conflicts when called in streak_pipeline.py
+    '''
+    def pca_fft_write(self, result: PipelineResult, normalized_img, streaks, output_dir) -> None:
+        stem = result.source_path.stem if result.source_path else "unknown"
+        if output_dir is not None:
+            run_dir = Path(output_dir) / stem
+        else:
+            run_dir = Path(cfg.output_dir) / stem
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        self._REJECTION_COLORS(self)
+        self.display_diagnostics_plot_1(self, normalized_img, run_dir)
+        self.display_diagnostics_plot_2(self, normalized_img, streaks, run_dir)
+        # if you want to see the Fourier components
+        #self._calculate_fft_intermediates(self, normalized_img, run_dir)
+        #self.display_fourier_correlation_steps(self, normalized_img, run_dir)
+
+        self.display_nearest_neighbour_histogram(self, run_dir)
+        self.display_line_profiles(self, normalized_img, streaks, run_dir)
+        self.display_final_results(self, normalized_img, streaks, run_dir)
+
+        if self._options.save_text_summary:
+            self._write_text_summary_pca_fft(result, run_dir)
+
+        logger.info("Results written to %s", run_dir)
+    '''
     # ------------------------------------------------------------------ #
     # Private writers                                                      #
     # ------------------------------------------------------------------ #
@@ -121,23 +159,35 @@ class LocalOutputWriter:
 
         for i, line in enumerate(result.detected_lines):
             x1, y1, x2, y2 = line[0]
-            xmin, xmax = min(x1, x2), max(x1, x2)
-            ymin, ymax = min(y1, y2), max(y1, y2)
-            cv2.rectangle(
+
+            cv2.line(
                 display,
-                (xmin, ymin),
-                (xmax, ymax),
-                (0, 255, 0),
-                ANNOTATION_THICKNESS,
-            )
-            cv2.putText(
-                display, str(i + 1), (xmin, ymin - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (0, 255, 255),
+                (x1, y1), # endpoint 1
+                (x2, y2), # endpoint 2
+                (0, 255, 0), # color
                 ANNOTATION_THICKNESS,
                 cv2.LINE_AA,
             )
+            #xmin, xmax = min(x1, x2), max(x1, x2)
+            #ymin, ymax = min(y1, y2), max(y1, y2)
+            # green bounding box
+            #cv2.rectangle(
+            #    display,
+            #    (xmin, ymin),
+            #    (xmax, ymax),
+            #    (0, 255, 0),
+            #    ANNOTATION_THICKNESS,
+            #)
+
+            # yellow number
+            #cv2.putText(
+            #    display, str(i + 1), (xmin, ymin - 10),
+            #    cv2.FONT_HERSHEY_SIMPLEX,
+            #    0.45,
+            #    (0, 255, 255),
+            #    ANNOTATION_THICKNESS,
+            #    cv2.LINE_AA,
+            #)
 
         path = run_dir / "detected_streaks.png"
         cv2.imwrite(str(path), display)
@@ -214,7 +264,7 @@ class LocalOutputWriter:
             divider(),
             "",
             row("Streaks detected:", str(result.streak_count)),
-            row("Status:", "OK" if result.succeeded else f"ERROR — {result.error}"),
+            row("Status:", "SUCCESS" if result.succeeded else f"ERROR — {result.error}"),
             "",
         ]
 
@@ -227,7 +277,7 @@ class LocalOutputWriter:
                 divider(),
                 "",
                 f"  {'#':<5} {'Start (x,y)':<18} {'End (x,y)':<18} {'Length (px)':<12} {'SNR':<8}",
-                f"  {'─'*4} {'─'*16:<18} {'─'*16:<18} {'─'*10:<12} {'─'*6:<8}",
+                f"  {'─'*4} {'─'*16:<18} {'─'*16:<18} {'─'*10:<12} {'─'*6:<8}", # table header
             ]
             for i, line in enumerate(result.detected_lines):
                 x1, y1, x2, y2 = line[0]
@@ -273,7 +323,7 @@ class LocalOutputWriter:
 
         lines += [divider("═"), ""]
 
-        path = run_dir / "processing_results.txt"
+        path = run_dir / "processing_results_hough.txt"
         path.write_text("\n".join(lines), encoding="utf-8")
         logger.debug("Wrote %s", path)
 
@@ -282,6 +332,468 @@ class LocalOutputWriter:
             cv2.imwrite(str(run_dir / "binary.png"), result.binary_image)
         if result.normalized_display is not None:
             cv2.imwrite(str(run_dir / "normalized_display.png"), result.normalized_display)
+
+
+    # ------------------------------------------------------------------
+    # PCA FFT 5.  DIAGNOSTIC PLOTTING MODULES
+    # ------------------------------------------------------------------
+
+    def _REJECTION_COLORS(self):
+        """
+        Master dictionary associating rejection reasons with plot colors.
+        """
+        self._REJECTION_COLORS = {
+            'prominence': 'yellow',
+            'overlap':    'blue',
+            'too_close':  'magenta',
+            'edge':       'red',
+            'saturated':  'purple',
+            'circular':   'orange',
+            'too_wide':   'cyan',
+    }
+
+
+    def display_diagnostics_plot_1(self, normalized_img, run_dir: Path, img_log) -> None:
+        """
+        Plots the original image and illustrates exactly which features were rejected 
+        from becoming the Master Template, and which one won.
+        """
+        fig, axs = plt.subplots(1, 2, figsize=(14, 7))
+
+        # ── Panel 1: Original Image ──────────────────────────────────
+        # Display with 1st/99th percentiles for good contrast
+        axs[0].imshow(normalized_img, cmap='gray', origin='lower',
+                        vmin=np.percentile(normalized_img, 1),
+                        vmax=np.percentile(normalized_img, 99))
+
+        legend_handles = []
+
+        # Draw all the candidate features that were evaluated
+        for f in self._all_features:
+            reason = f['rejection']
+            if reason is None:
+                continue
+            color  = self._REJECTION_COLORS.get(reason, 'white')
+            coords = f['coords']
+            
+            label_text = f'Rejected: {reason}'
+            
+            handle = axs[0].plot(coords[:, 1], coords[:, 0], '.',
+                                    markersize=1, color=color, alpha=0.4,
+                                    label=label_text)[0]
+            legend_handles.append(handle)
+
+        # Draw the champion Master Template in green
+        if self.template_coords is not None:
+            h = axs[0].plot(self.template_coords[:, 1],
+                            self.template_coords[:, 0],
+                            'g.', markersize=1, alpha=0.4,
+                            label='Selected template')[0]
+            legend_handles.append(h)
+
+        # Draw a bounding box around the chosen template for visibility
+        if self.best_template_bbox is not None:
+            y_start, y_end, x_start, x_end = self.best_template_bbox
+            rect = patches.Rectangle(
+                (x_start, y_start),
+                x_end - x_start, y_end - y_start,
+                linewidth=2, edgecolor='lime', facecolor='none',
+                linestyle='--', label='Template box')
+            axs[0].add_patch(rect)
+
+        # Generate custom key symbols for the legend
+        for reason, color in self._REJECTION_COLORS.items():
+            label_text = f'Rejected: {reason}'
+            axs[0].plot([], [], 's', color=color, label=label_text)
+            
+        # Deduplicate the legend! Without this, matplotlib will create like 500 legend entries.
+        handles, labels = axs[0].get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        axs[0].legend(by_label.values(), by_label.keys(), loc='upper right', fontsize=7, markerscale=4)
+
+        axs[0].set_title("1. Original Image – Template Selection")
+
+        # ── Panel 2: Chosen Template ─────────────────────────────────
+        if self.best_template is not None:
+            axs[1].imshow(self.best_template, cmap='gray', origin='lower')
+            axs[1].set_title(
+                f"2. Best Template  (angle: {self.best_template_angle:.2f}°)")
+        else:
+            axs[1].set_title("2. Template not created")
+
+        path = run_dir / "template_selection.png"
+        plt.tight_layout()
+        plt.savefig(path)
+        img_log.info("Wrote template_selection.png")
+        logger.debug("Wrote %s", path)
+        
+
+    def display_diagnostics_plot_2(self, normalized_img, streaks, run_dir: Path, img_log) -> None:
+        """
+        Plots the Correlation Map (Heatmap) output by the FFT algorithm, alongside 
+        the extracted peaks and nearest-neighbor linkages.
+        """
+        fig, axs = plt.subplots(1, 2, figsize=(14, 7))
+
+        if self.correlation_map is not None:
+            # ── Panel 1: Nearest Neighbors ───────────────────────────────
+            axs[0].imshow(self.correlation_map, cmap='viridis', origin='lower')
+            if (self.detected_peaks_coords is not None and len(self.detected_peaks_coords) > 0):
+                axs[0].plot(self.detected_peaks_coords[:, 0],
+                            self.detected_peaks_coords[:, 1],
+                            'r+', markersize=10, alpha=0.6,
+                            label='Detected peaks')
+
+                # Draw thin lines connecting every peak to its closest neighbor
+                if hasattr(self, 'nn_indices') and self.nn_distances.size > 0:
+                    plotted_nn = set()
+                    for i, j in enumerate(self.nn_indices):
+                        # Use a sorted tuple to ensure line A->B is treated the same as B->A (prevent duplicate drawing)
+                        key = tuple(sorted((i, int(j))))
+                        if key in plotted_nn:
+                            continue
+                        plotted_nn.add(key)
+                        xi, yi = self.detected_peaks_coords[i]
+                        xj, yj = self.detected_peaks_coords[int(j)]
+                        axs[0].plot([xi, xj], [yi, yj], 'c-', lw=0.8, alpha=0.5)
+                        
+            axs[0].set_title("3. Correlation Map, Peaks & Nearest-Neighbour Links")
+            axs[0].legend(loc='upper right', fontsize=8)
+
+            # ── Panel 2: Detected Streaks ────────────────────────────────
+            axs[1].imshow(self.correlation_map, cmap='viridis', origin='lower')
+            for streak in streaks:
+                (x1, y1), (x2, y2) = streak['endpoints']
+                reason = streak['rejection']
+                
+                # In the final detection context, 'prominence' just means it wasn't the absolute brightest, 
+                # but it is still fully accepted.
+                if reason is None or reason == 'prominence':
+                    color = 'lime' if reason is None else 'yellow'
+                    label = 'Accepted'
+                else:
+                    color = self._REJECTION_COLORS.get(reason, 'red')
+                    label = f'Rejected: {reason}'
+                    
+                axs[1].plot([x1, x2], [y1, y2], color=color, lw=1.5, alpha=0.8, label=label)
+            
+            # Deduplicate the legend
+            handles, labels = axs[1].get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            axs[1].legend(by_label.values(), by_label.keys(), loc='upper right', fontsize=7)
+            axs[1].set_title("4. Correlation Map & Final Detections")
+            axs[1].set_xlim(0, normalized_img.shape[1])
+            axs[1].set_ylim(0, normalized_img.shape[0])
+        else:
+            axs[0].set_title("3. Correlation map not calculated")
+            axs[1].set_title("4. Correlation map not calculated")
+
+        path = run_dir / "correlation_map.png"
+        plt.tight_layout()
+        plt.savefig(path)
+        img_log.info("Wrote correlation_map.png")
+        logger.debug("Wrote %s", path)
+
+
+    def _calculate_fft_intermediates(self, normalized_img, img_log) -> None:
+        """
+        Computes the Fast Fourier Transform (FFT) magnitudes for the original image and the template.
+        This is strictly used for the `display_fourier_correlation_steps` visualization plot.
+        """
+        img_log.info("Calculating FFT intermediates...")
+
+        # Image FFT
+        fft_img         = np.fft.fft2(normalized_img)
+        fft_img_shifted = np.fft.fftshift(fft_img) # Shift low frequencies to the center of the image
+        self.fft_image_log = np.log(np.abs(fft_img_shifted) + 1e-9)
+
+        # Template FFT (padded to match image size)
+        padded = np.zeros_like(normalized_img)
+        th, tw = self.best_template.shape
+        ih, iw = normalized_img.shape
+        cy, cx = ih // 2, iw // 2
+        padded[cy - th//2: cy + th - th//2, cx - tw//2: cx + tw - tw//2] = self.best_template
+
+        fft_tpl         = np.fft.fft2(padded)
+        fft_tpl_shifted = np.fft.fftshift(fft_tpl)
+        self.fft_template_log = np.log(np.abs(fft_tpl_shifted) + 1e-9)
+
+        # Spectral Product (Image * Conjugate of Template) - This represents the correlation in frequency space!
+        fft_product         = fft_img * np.conj(fft_tpl)
+        fft_product_shifted = np.fft.fftshift(fft_product)
+        self.fft_product_log = np.log(np.abs(fft_product_shifted) + 1e-9)
+
+
+    def display_fourier_correlation_steps(self, run_dir: Path, img_log) -> None:
+        """Displays the internal spatial frequencies used by the FFT correlation algorithm."""
+        if self.fft_image_log is None:
+            return
+        fig, axs = plt.subplots(1, 3, figsize=(14, 5))
+        axs[0].imshow(self.fft_image_log,    cmap='gray',   origin='lower')
+        axs[0].set_title("A. FFT Magnitude of Image")
+        axs[0].axis('off')
+        axs[1].imshow(self.fft_template_log, cmap='gray',   origin='lower')
+        axs[1].set_title("B. FFT Magnitude of Template")
+        axs[1].axis('off')
+        axs[2].imshow(self.fft_product_log,  cmap='inferno', origin='lower')
+        axs[2].set_title("C. Spectral Product (Image × Template*)")
+        axs[2].axis('off')
+
+        path = run_dir / "fourier_correlation_steps.png"
+        plt.tight_layout()
+        plt.savefig(path)
+        img_log.info("Wrote fourier_correlation_steps.png")
+        logger.debug("Wrote %s", path)
+
+
+    def display_nearest_neighbor_histogram(self, run_dir: Path, img_log) -> None:
+        """Plots a histogram showing the distribution of distance between streaks."""
+        if not hasattr(self, 'nn_distances') or self.nn_distances.size == 0:
+            img_log.warning("No NN data to plot.")
+            return
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.hist(self.nn_distances, bins=20, color='steelblue', edgecolor='white')
+        ax.set_xlabel("Distance to nearest-neighbor peak (pixels)")
+        ax.set_ylabel("Count")
+        ax.set_title("Nearest-Neighbour Distance Distribution")
+        plt.tight_layout()
+
+        path = run_dir / "nearest_neighbor_histogram.png"
+        plt.savefig(path)
+        img_log.info("Wrote nearest_neighbor_histogram.png")
+        logger.debug("Wrote %s", path)
+
+
+    def display_line_profiles(self, normalized_img, streaks, run_dir: Path, img_log) -> None:
+        """
+        Draws an exact 1D line slice straight down the mathematical center of the primary streak,
+        plotting its brightness across the image vs. its correlation confidence score.
+        """
+        fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+
+        if not streaks:
+            for ax in axs:
+                ax.set_title("No streaks detected")
+            plt.tight_layout()
+            path = run_dir / "line_profiles.png"
+            plt.savefig(path)
+            logger.debug("Wrote %s", path)
+            return
+
+        (x1, y1), (x2, y2) = streaks[0]['endpoints']
+        
+        # Linearly interpolate points between the start and end of the streak
+        t = np.linspace(0, 1, cfg.profile_length)
+        x_idx = x1 + (x2 - x1) * t
+        y_idx = y1 + (y2 - y1) * t
+        coords = np.vstack((y_idx, x_idx))
+
+        # Map the coordinates back onto the heatmap and original image arrays to extract values
+        if self.correlation_map is not None:
+            cp = map_coordinates(self.correlation_map, coords, order=1)
+            axs[0].plot(t, cp, 'c-')
+            axs[0].set_title("5. Correlation Profile Along Streak")
+            axs[0].set_xlabel("Normalised distance")
+            axs[0].set_ylabel("Correlation value")
+
+        bp = map_coordinates(normalized_img, coords, order=1)
+        axs[1].plot(t, bp, 'm-')
+        axs[1].set_title("6. Base Image Profile Along Streak")
+        axs[1].set_xlabel("Normalised distance")
+        axs[1].set_ylabel("Pixel intensity")
+
+        plt.tight_layout()
+        path = run_dir / "line_profiles.png"
+        plt.savefig(path)
+        img_log.info("Wrote line_profiles.png")
+        logger.debug("Wrote %s", path)
+
+
+    def display_final_results(self, normalized_img, streaks, run_dir: Path, img_log) -> None:
+        """
+        The final master plot overlaying every accepted and rejected streak line directly 
+        onto the original FITS image.
+        """
+        fig, ax = plt.subplots(figsize=(12, 12))
+        ax.imshow(normalized_img, cmap='gray', origin='lower',
+                    vmin=np.percentile(normalized_img, 1),
+                    vmax=np.percentile(normalized_img, 99))
+        
+        self.accepted_count = 0
+        '''
+        for streak in streaks:
+            (x1, y1), (x2, y2) = streak['endpoints']
+            reason = streak['rejection']
+
+            # In the final detection context, 'prominence' just means it wasn't the absolute brightest, 
+            # but it is still fully accepted.
+            if reason is None or reason == 'prominence':
+                self.accepted_count += 1
+                self.accepted_streaks.append(streak)
+                if reason is None:
+                    color = 'lime'
+                    label = 'Best'
+                else:
+                    color = 'yellow'
+                    label = 'Accepted'
+                alpha, lw = 0.9, 2.0 
+            else:
+                color, alpha, lw = self._REJECTION_COLORS.get(reason, 'red'), 0.4, 1.0 
+                label = f'Rejected: {reason}'
+            
+            ax.plot([x1, x2], [y1, y2], color=color, lw=lw, alpha=alpha, label=label)
+        '''
+        # First pass — rejected streaks (drawn underneath)
+        for streak in streaks:
+            reason = streak['rejection']
+            if reason is None or reason == 'prominence':
+                continue
+            (x1, y1), (x2, y2) = streak['endpoints']
+            color = self._REJECTION_COLORS.get(reason, 'red')
+            ax.plot([x1, x2], [y1, y2], color=color, lw=1.0, alpha=0.4,
+                    label=f'Rejected: {reason}')
+
+        # Second pass — accepted streaks (drawn on top)
+        for streak in streaks:
+            reason = streak['rejection']
+            if reason is None or reason == 'prominence':
+                self.accepted_count += 1
+                self.accepted_streaks.append(streak)
+                (x1, y1), (x2, y2) = streak['endpoints']
+                color = 'lime' if reason is None else 'yellow'
+                label = 'Accepted' if reason is None else 'Accepted'
+                ax.plot([x1, x2], [y1, y2], color=color, lw=2.0, alpha=0.9, label=label)
+        
+        title = f"Final Detections ({self.accepted_count} valid, {len(streaks) - self.accepted_count} rejected)"
+        
+        # Display the length used for calculations in the title dynamically
+        length_to_display = self.theoretical_streak_length_px if (self.use_exposure_length and self.theoretical_streak_length_px) else self.expected_streak_length_px
+        
+        if length_to_display:
+            title += (f"\n(Expected streak length ≈ "
+                        f"{length_to_display:.0f} px"
+                        f" | Exposure = {self.exposure_time} s)")
+                        
+        ax.set_title(title)
+        ax.set_xlim(0, normalized_img.shape[1])
+        ax.set_ylim(0, normalized_img.shape[0])
+        
+        # Deduplicate Legend
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), loc='upper right', fontsize=8)
+        
+        plt.tight_layout()
+        path = run_dir / "final_results_pca_fft.png"
+        plt.savefig(path)
+        img_log.info("Wrote final_results_pca_fft.png")
+        logger.debug("Wrote %s", path)
+
+
+    def _write_text_summary_pca_fft(self, result: PipelineResult, run_dir: Path, streaks) -> None:
+        p = result.provenance
+        source = result.source_path.name if result.source_path else "unknown"
+        width = 60
+
+        def divider(char="─"):
+            return char * width
+
+        def row(label: str, value: str) -> str:
+            return f"  {label:<28}{value}"
+
+        lines = [
+            divider("═"),
+            "  STREAK DETECTION SUMMARY".center(width),
+            divider("═"),
+            "",
+        ]
+
+        # Source file
+        lines += [
+            row("File:", source),
+            row("Processed:", p.processing_start_utc[:19].replace("T", "  ") if p else "—"),
+            row("Duration:", _format_duration(p) if p else "—"),
+            row("Software version:", p.software_version if p else "—"),
+            "",
+            divider(),
+            "  RESULT",
+            divider(),
+            "",
+            row("Streaks detected:", str(self.accepted_count)),
+            row("Status:", "SUCCESS" if result.succeeded else f"ERROR — {result.error}"),
+            "",
+        ]
+        
+        # Per-streak table
+        if self.accepted_count is not None:
+            #snr_by_index = {s.streak_index: s for s in result.snr_estimates} # fix this
+            lines += [
+                divider(),
+                "  DETECTED STREAKS",
+                divider(),
+                "",
+                f"  {'#':<5} {'Start (x,y)':<18} {'End (x,y)':<18} {'Length (px)':<12} {'SNR':<8}",
+                f"  {'─'*4} {'─'*16:<18} {'─'*16:<18} {'─'*10:<12} {'─'*6:<8}", # table header
+            ]
+
+            for i, line in enumerate(self.accepted_streaks):
+                x1, y1, x2, y2 = int(line['endpoints'][0][0]), int(line['endpoints'][0][1]), int(line['endpoints'][1][0]), int(line['endpoints'][1][1])
+                length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+                #snr = snr_by_index.get(i)
+                snr_str='test'
+                #snr_str = f"{snr.snr:>6.1f}" if snr and snr.is_valid else "   N/A"
+                lines.append(
+                    f"  {i+1:<5} ({x1:>5}, {y1:>5})     ({x2:>5}, {y2:>5})     {length:>8.1f}     {snr_str}"
+                )
+            lines.append("")
+        
+        # Pipeline settings
+        if p:
+            lines += [
+                divider(),
+                "  PIPELINE SETTINGS",
+                divider(),
+                "",
+                '''
+                row("Background method:", p.background_method_used),
+                row("Min line length:", f"{p.min_line_length_used:.1f} px"),
+                row("Hough threshold:", str(p.hough_threshold_used)),
+                "",
+                '''
+            ]
+            
+            # Filter stage counts
+            #if p.stage_line_counts:
+            lines += [
+                divider(),
+                "  FILTER STAGES",
+                divider(),
+                "",
+            ]
+
+            if streaks is not None:
+                lines.append(row(f"INITIAL:", f"{len(streaks):>4}  (raw detection)"))
+                # edge
+                remaining = len(streaks) - self.edge_rejected
+                removed = f"(−{self.edge_rejected})"
+                lines.append(row(f"EDGE:", f"{remaining:>4}  {removed}"))
+
+                # proximity
+                remaining = remaining - self.proximity_rejected
+                removed = f"(−{self.proximity_rejected})"
+                lines.append(row(f"PROXIMITY:", f"{remaining:>4}  {removed}"))
+
+                # prominence (should always result in 1 remaining streak, the brightest one)
+                remaining = remaining - self.prominence_rejected
+                removed = f"(−{self.prominence_rejected})"
+                lines.append(row(f"PROMINENCE:", f"{remaining:>4}  {removed}"))
+                lines.append("")
+            
+        lines += [divider("═"), ""]
+        
+        path = run_dir / "processing_results_pca_fft.txt"
+        path.write_text("\n".join(lines), encoding="utf-8")
+        logger.debug("Wrote %s", path)
 
 
 # ------------------------------------------------------------------ #

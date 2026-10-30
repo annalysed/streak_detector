@@ -10,14 +10,18 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
-
 import numpy as np
 
 from streakiller import __version__
 from streakiller.config.schema import PipelineConfig
+from streakiller.config.schema import OutputOptions
+from streakiller.detection.pca_fft_detector import PCAFFTDetector
+from streakiller.detection.normalizer import normalize
+from streakiller.filters.pca_fft_filters import _filter_detected_streaks
+from streakiller.io.output_writer import LocalOutputWriter
 from streakiller.models.fits_image import FitsImage
 from streakiller.models.result import PipelineResult, Provenance
+from streakiller.satellite.streak_estimator import estimate_streak_length_for_template
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +71,20 @@ class StreakPipeline:
             PerRowMedianCurveEstimator,
         )
         from streakiller.detection.detector import StreakDetector
-        from streakiller.detection.fft_detector import FftCorrelationDetector
+        from streakiller.detection.pca_fft_detector import PCAFFTDetector
         from streakiller.filters.chain import FilterChain
+
+        # Telemetry / Physical attributes extracted from FITS
+        self.exposure_time = None      # Exposure time in seconds
+        self.pixel_scale_arcsec = None   # Plate scale in arcseconds per pixel
+        self.theoretical_streak_length_px = None 
+        self.use_exposure_length = False # Keep False to preserve the template-driven behavior by default
+
+        self.accepted_count = 0
+        self.accepted_streaks = []
+        self.edge_rejected = 0
+        self.proximity_rejected = 0
+        self.prominence_rejected = 0
 
         self._config = config
         self._calibration = calibration_step
@@ -95,7 +111,7 @@ class StreakPipeline:
         if config.detection_method.peak_hough:
             self._detector = PeakHoughDetector(config.peak_hough_params)
         elif config.detection_method.fft_correlation:
-            self._detector = FftCorrelationDetector(config.fft_detector_params)
+            self._detector = PCAFFTDetector(config.fft_detector_params)
         else:
             self._detector = StreakDetector(config.hough_params)
         self._filter_chain = FilterChain.from_config(config.enabled_line_filters)
@@ -114,7 +130,7 @@ class StreakPipeline:
     # Main entry point                                                     #
     # ------------------------------------------------------------------ #
 
-    def process(self, image: FitsImage) -> PipelineResult:
+    def process(self, image: FitsImage, method, output_dir) -> PipelineResult:
         """
         Run the full pipeline on one image.
 
@@ -133,10 +149,13 @@ class StreakPipeline:
         """
         start_utc = datetime.now(tz=timezone.utc).isoformat()
         img_log = logging.LoggerAdapter(logger, {"source_file": str(image.source_path)})
-        img_log.info("Pipeline started")
+        img_log.info("Streak detection pipeline running...\n")
 
         try:
-            return self._run(image, start_utc, img_log)
+            if method == "pca_fft":
+                return self._run2(image, start_utc, img_log, output_dir)
+            else:
+                return self._run(image, start_utc, img_log)
         except Exception as exc:
             img_log.error("Pipeline failed: %s", exc, exc_info=True)
             return PipelineResult(
@@ -149,6 +168,79 @@ class StreakPipeline:
     # ------------------------------------------------------------------ #
     # Private                                                              #
     # ------------------------------------------------------------------ #
+
+    def _run2(self, image: FitsImage, start_utc: str, img_log, output_dir) -> PipelineResult:
+        cfg = self._config
+
+        # 1. Image Loading & Preprocessing: Extract Exposure Time and Pixel Scale to Calculate Estimated Streak Length, and Normalize the Image
+        exposure_time, pixel_scale_arcsec = PCAFFTDetector._parse_exposure_info(self, image, img_log)
+
+        theoretical_streak_length_px = estimate_streak_length_for_template(exposure_time, pixel_scale_arcsec)
+        
+        normalized_img = normalize(image.data, img_log)
+
+        # 2. Master Template Creation: Filter find_objects Output by Edge, Circularity, Width
+        PCAFFTDetector._create_template_from_image(self, normalized_img, img_log)
+
+        # 3. Streak Detection: PCA on Master Template, FFT to Find Matches
+        streaks = PCAFFTDetector.detect_streaks_by_template(self, normalized_img, img_log, theoretical_streak_length_px)
+
+        # 4. Filter Detected Streaks: Edge, Proximity, and Prominence Rejection
+        _filter_detected_streaks(self, normalized_img, streaks)
+        
+        end_utc = datetime.now(tz=timezone.utc).isoformat()
+
+        # Write outputs
+        provenance = Provenance(
+            software_version=__version__,
+            config_snapshot=self._config_snapshot(),
+            processing_start_utc=start_utc,
+            processing_end_utc=end_utc,
+            background_method_used=None,
+            detection_method_used=cfg.detection_method.active_name(),
+            min_line_length_used=None,
+            hough_threshold_used=None,
+            stage_line_counts=None,
+        )
+
+        result = PipelineResult(
+            source_path=image.source_path,
+            initial_detected_lines=None,
+            detected_lines=None,
+            filter_snapshots=None,
+            snr_estimates=None,
+            normalized_display=None,
+            binary_image=None,
+            provenance=provenance,
+        )
+
+        # Create directory to hold outputs for this FITS file
+        stem = result.source_path.stem if result.source_path else "unknown"
+        if output_dir is not None:
+            run_dir = Path(output_dir) / stem
+        else:
+            run_dir = Path(cfg.output_dir) / stem
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        # Plot 
+        LocalOutputWriter._REJECTION_COLORS(self)
+        LocalOutputWriter.display_diagnostics_plot_1(self, normalized_img, run_dir, img_log)
+        LocalOutputWriter.display_diagnostics_plot_2(self, normalized_img, streaks, run_dir, img_log)
+        if OutputOptions.save_fft_intermediates:
+            LocalOutputWriter._calculate_fft_intermediates(self, normalized_img, img_log)
+            LocalOutputWriter.display_fourier_correlation_steps(self, run_dir, img_log)
+        LocalOutputWriter.display_nearest_neighbor_histogram(self, run_dir, img_log)
+        LocalOutputWriter.display_line_profiles(self, normalized_img, streaks, run_dir, img_log)
+        LocalOutputWriter.display_final_results(self, normalized_img, streaks, run_dir, img_log)
+
+        # Write text file with summary of results
+        if OutputOptions.save_text_summary:
+            LocalOutputWriter._write_text_summary_pca_fft(self, result, run_dir, streaks)
+
+        logger.info("Results written to %s", run_dir)
+
+        return result
+    
 
     def _run(self, image: FitsImage, start_utc: str, img_log) -> PipelineResult:
         cfg = self._config
@@ -184,12 +276,12 @@ class StreakPipeline:
                 float(np.median([s.snr for s in valid])) if valid else float("nan"),
             )
 
-        end_utc = datetime.now(tz=timezone.utc).isoformat()
-
         stage_counts: dict[str, int] = {"initial_detected": len(detection.lines)}
         for snap in snapshots:
             stage_counts[snap.stage_name] = snap.lines_after
         stage_counts["final"] = len(final_lines)
+
+        end_utc = datetime.now(tz=timezone.utc).isoformat()
 
         provenance = Provenance(
             software_version=__version__,
@@ -223,7 +315,7 @@ class StreakPipeline:
             self._writer.write(result)
 
         return result
-
+    
     def _prepare_image(self, image: FitsImage, img_log) -> FitsImage:
         cfg = self._config
         if cfg.image_calibration and self._calibration is not None:

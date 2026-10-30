@@ -78,6 +78,8 @@ FFT_MIN_ELONGATION = 3.0         # minimum length/width ratio; rejects near-circ
 FFT_PERCENTILE_THRESHOLD = 99.0  # image percentile used to build the initial binary mask
 FFT_TEMPLATE_EDGE_MARGIN = 15    # template candidates closer than N px to the image edge are rejected
 FFT_STREAK_EDGE_MARGIN = 5       # detected streaks closer than N px to the image edge are rejected
+FFT_PROXIMITY_MARGIN = 20        # detected streaks closer than N px to each other are rejected
+FFT_PROFILE_LENGTH = 200         # used to linearly interpolate points between the start and end of the streak
 FFT_PROMINENCE_FRACTION = 0.5    # reject peaks below this fraction of the maximum correlation score
 
 # --- Peak-Hough detector (per-row polynomial baseline + find_peaks) ---

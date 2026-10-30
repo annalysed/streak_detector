@@ -67,6 +67,8 @@ from streakiller.config.defaults import (
     FFT_PERCENTILE_THRESHOLD,
     FFT_TEMPLATE_EDGE_MARGIN,
     FFT_STREAK_EDGE_MARGIN,
+    FFT_PROXIMITY_MARGIN,
+    FFT_PROFILE_LENGTH,
     FFT_PROMINENCE_FRACTION,
     PEAK_HOUGH_CLIP_PERCENTILE_LOW,
     PEAK_HOUGH_CLIP_PERCENTILE_HIGH,
@@ -271,6 +273,8 @@ class FftDetectorParams:
     percentile_threshold: float = FFT_PERCENTILE_THRESHOLD
     template_edge_margin: int = FFT_TEMPLATE_EDGE_MARGIN
     streak_edge_margin: int = FFT_STREAK_EDGE_MARGIN
+    proximity_margin: int = FFT_PROXIMITY_MARGIN
+    profile_length: int = FFT_PROFILE_LENGTH
     prominence_fraction: float = FFT_PROMINENCE_FRACTION
 
 
@@ -318,6 +322,7 @@ class HotpixelParams:
 class OutputOptions:
     save_intermediate_images: bool = False
     save_text_summary: bool = True
+    save_fft_intermediates: bool = False
 
 
 @dataclass

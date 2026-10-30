@@ -13,3 +13,6 @@ calibration_frames/**
 images/**
 dev_tools/
 config.json
+*.fit
+*.fits
+*.png

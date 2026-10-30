@@ -59,15 +59,17 @@ Processes one or more FITS files and writes results to the output directory.
 | `--log-format [text\|json]` | `text` | Human-readable or structured JSON logs |
 | `--dry-run` | — | Print matched files and exit without processing |
 | `--fail-fast` | — | Stop immediately on the first error |
+| `--method` | `hough` | Streak detection method |
+
 
 ```bash
-# Only files matching a glob
+# Run only for files matching a glob
 python -m streakiller process --images-dir images/ --glob "Intelsat*.fits"
 
 # Write results to a custom directory
 python -m streakiller process --images-dir images/ --output-dir /tmp/results
 
-# Four parallel workers for a large batch
+# Run four parallel workers for a large batch of images
 python -m streakiller process --images-dir images/ --workers 4
 
 # Structured JSON logs (useful for log aggregators / CI)

@@ -12,7 +12,7 @@ import numpy as np
 from streakiller.models.streak import FilterStageSnapshot, StreakSNR
 
 
-@dataclass(frozen=True)
+@dataclass
 class Provenance:
     """
     Immutable audit record for a single image run.
@@ -47,8 +47,8 @@ class PipelineResult:
     """
 
     source_path: Optional[Path]
-    initial_detected_lines: np.ndarray = field(default_factory=lambda: np.empty((0, 1, 4), dtype=np.int32))
-    detected_lines: np.ndarray = field(default_factory=lambda: np.empty((0, 1, 4), dtype=np.int32))
+    initial_detected_lines: Optional[np.ndarray] = field(default_factory=lambda: np.empty((0, 1, 4), dtype=np.int32))
+    detected_lines: Optional[np.ndarray] = field(default_factory=lambda: np.empty((0, 1, 4), dtype=np.int32))
     filter_snapshots: list[FilterStageSnapshot] = field(default_factory=list)
     snr_estimates: list[StreakSNR] = field(default_factory=list)
     normalized_display: Optional[np.ndarray] = None   # uint8 (H, W) for visualisation

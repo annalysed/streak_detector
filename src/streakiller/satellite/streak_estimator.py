@@ -6,7 +6,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from skyfield.api import load, EarthSatellite, wgs84
+from skyfield.framelib import ICRS
+from datetime import datetime, timezone
+import tempfile
+from streakiller.io.tle_cache import TleCache
+
 
 import numpy as np
 
@@ -31,8 +36,6 @@ class StreakLengthEstimator:
             If None a cache in the system temp directory is used.
         """
         if tle_cache is None:
-            import tempfile
-            from streakiller.io.tle_cache import TleCache
             tle_cache = TleCache(Path(tempfile.gettempdir()) / "streakiller_tle_cache")
         self._cache = tle_cache
 
@@ -54,9 +57,6 @@ class StreakLengthEstimator:
 
         Raises ValueError if TLE data cannot be retrieved or location is missing.
         """
-        from skyfield.api import load, EarthSatellite, wgs84
-        from skyfield.framelib import ICRS
-        from datetime import datetime, timezone
 
         tle_text = self._cache.fetch_or_refresh(norad_id)
         lines = tle_text.strip().split("\n")
@@ -91,3 +91,34 @@ class StreakLengthEstimator:
             norad_id, angular_velocity, max_streak_px, min_line_length,
         )
         return float(min_line_length)
+
+def estimate_streak_length_for_template(
+    exposure_time: float,
+    pixel_scale_arcsec: float,
+    expected_angular_velocity_arcsec_s=15.0 # default to sidereal rate
+) -> float:
+    """
+    Calculates the streak length based on the exposure time and expected tracking speed.
+    
+    Formula: 
+    Length [px] = (Velocity [arcsec/s] * Exposure [s]) / Pixel Scale [arcsec/px]
+    
+    Note: The default velocity (15 arcsec/s) is the sidereal tracking rate. This means 
+    if the telescope is stationary, stars will trail at exactly this length.
+    """
+
+    if exposure_time is None or pixel_scale_arcsec is None:
+        if exposure_time is None:
+            print("  Cannot calculate estimated streak length: Missing exposure time.")
+        else:
+            print("  Cannot calculate estimated streak length: Missing pixel scale.")
+        theoretical_streak_length_px = None
+        return
+    
+    theoretical_streak_length_px = (expected_angular_velocity_arcsec_s * exposure_time) / pixel_scale_arcsec
+
+    logger.info(
+        "theoretical_streak_length_px=%.1f px",
+        theoretical_streak_length_px,
+    )
+    return float(theoretical_streak_length_px)
